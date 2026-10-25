@@ -1,101 +1,113 @@
-import { supabase } from "../lib/supabase.js";
+import { supabase } from '../lib/supabase.js';
+import type { PolicyDecision, PurchaseRequest } from '../types/shared.js';
 
-export interface PolicyContext {
-  agent_id: string;
-  category: string;
-  amount: number;
-}
-
-export interface PolicyDecision {
-  status: "approved" | "pending" | "rejected";
-  decision_by: string;
-  reason: string;
-  matched_policy_id: string | null;
-}
-
-/**
- * Precedencia (de más específica a más genérica):
- * 1. Política del agente + categoría exacta
- * 2. Política del agente sin categoría (aplica a todo)
- * 3. Política global de categoría (agent_id = null)
- * 4. Política global default (agent_id = null, category = null)
- */
-export async function evaluatePolicy(ctx: PolicyContext): Promise<PolicyDecision> {
-  // 1. Traemos todas las políticas que puedan aplicar (del agente o globales)
+export async function evaluatePolicy(
+  data: PurchaseRequest
+): Promise<PolicyDecision> {
   const { data: policies, error } = await supabase
-    .from("policies")
-    .select("*")
-    .or(`agent_id.eq.${ctx.agent_id},agent_id.is.null`);
+    .from('policies')
+    .select('*')
+    .eq('is_active', true)
+    .order('priority', { ascending: true });
 
   if (error || !policies) {
-    return {
-      status: "pending",
-      decision_by: "system:error",
-      reason: "Failed to fetch policies from database",
-      matched_policy_id: null,
-    };
+    console.error('Policy fetch error:', error);
+    return fallbackDecision(data);
   }
 
-  // 2. Filtramos las que aplican al contexto actual
-  const applicable = policies.filter((p) => {
-    const agentMatch = p.agent_id === ctx.agent_id || p.agent_id === null;
-    const categoryMatch = p.category === ctx.category || p.category === null; // <-- Aquí estaba el typo
-    return agentMatch && categoryMatch;
-  });
+  for (const policy of policies) {
+    if (!matchesPolicy(policy, data)) continue;
 
-  // 3. Ordenamos por precedencia en JS (100% predecible)
-  applicable.sort((a, b) => {
-    // Agente específico gana a global (null)
-    if (a.agent_id !== null && b.agent_id === null) return -1;
-    if (a.agent_id === null && b.agent_id !== null) return 1;
+    // Regla: bloqueo por fin de semana
+    if (policy.block_weekends && isWeekend()) {
+      return {
+        status: 'rejected',
+        decision_by: `policy:${policy.id}`,
+        reason: `Category '${data.category}' blocked on weekends by policy '${policy.name}'`,
+        policy_id: policy.id,
+      };
+    }
 
-    // Categoría específica gana a global (null)
-    if (a.category !== null && b.category === null) return -1;
-    if (a.category === null && b.category !== null) return 1;
+    // Regla: bloqueo fuera de horario laboral
+    if (policy.block_outside_hours && isOutsideWorkHours(policy)) {
+      return {
+        status: 'rejected',
+        decision_by: `policy:${policy.id}`,
+        reason: `Outside work hours (${policy.work_hours_start}-${policy.work_hours_end})`,
+        policy_id: policy.id,
+      };
+    }
 
-    return 0;
-  });
+    // Regla: auto-aprobación por monto
+    if (policy.auto_approve_under > 0 && data.amount <= policy.auto_approve_under) {
+      return {
+        status: 'approved',
+        decision_by: `policy:${policy.id}`,
+        reason: `Auto-approved (amount ${data.amount} <= ${policy.auto_approve_under})`,
+        policy_id: policy.id,
+      };
+    }
 
-  const policy = applicable[0];
+    // Regla: bloqueo duro
+    if (policy.hard_block_above !== null && data.amount > policy.hard_block_above) {
+      return {
+        status: 'rejected',
+        decision_by: `policy:${policy.id}`,
+        reason: `Amount ${data.amount} exceeds hard block limit ${policy.hard_block_above}`,
+        policy_id: policy.id,
+      };
+    }
 
-  if (!policy) {
-    return {
-      status: "pending",
-      decision_by: "system:no_matching_policy",
-      reason: "No policy found for this context",
-      matched_policy_id: null,
-    };
+    // Regla: requiere aprobación humana
+    if (policy.requires_approval) {
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      return {
+        status: 'pending',
+        decision_by: `policy:${policy.id}`,
+        reason: `Requires human approval: ${policy.description || policy.name}`,
+        policy_id: policy.id,
+        expires_at: expiresAt,
+      };
+    }
   }
 
-  // 4. Evaluamos las reglas de la política ganadora
-
-  // Regla A: Categoría bloqueada → siempre requiere humano
-  if (policy.blocked) {
-    return {
-      status: "pending",
-      decision_by: `policy:${policy.id}`,
-      reason: `Category '${ctx.category}' is blocked by policy`,
-      matched_policy_id: policy.id,
-    };
-  }
-
-  // Regla B: Monto bajo el límite de auto-aprobación
-  if (policy.max_auto_approve !== null && ctx.amount <= policy.max_auto_approve) {
-    return {
-      status: "approved",
-      decision_by: `policy:${policy.id}`,
-      reason: `Amount ${ctx.amount} <= auto-approve limit ${policy.max_auto_approve}`,
-      matched_policy_id: policy.id,
-    };
-  }
-
-  // Regla C: Monto sobre el límite (o sin límite configurado) → requiere humano
+  // Sin política que aplique: aprobar por defecto (fail-open)
   return {
-    status: "pending",
-    decision_by: `policy:${policy.id}`,
-    reason: policy.max_auto_approve !== null
-      ? `Amount ${ctx.amount} exceeds auto-approve limit ${policy.max_auto_approve}`
-      : "Policy requires human approval (no auto-approve limit configured)",
-    matched_policy_id: policy.id,
+    status: 'approved',
+    decision_by: 'policy:default',
+    reason: 'No matching policy — auto-approved',
+  };
+}
+
+function matchesPolicy(policy: any, data: PurchaseRequest): boolean {
+  if (policy.category && policy.category !== data.category) return false;
+  if (policy.vendor && policy.vendor !== data.vendor) return false;
+  if (policy.environment && policy.environment !== data.environment) return false;
+  return true;
+}
+
+function isWeekend(): boolean {
+  const day = new Date().getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function isOutsideWorkHours(policy: any): boolean {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  return hour < policy.work_hours_start || hour >= policy.work_hours_end;
+}
+
+function fallbackDecision(data: PurchaseRequest): PolicyDecision {
+  if (data.amount <= 100) {
+    return {
+      status: 'approved',
+      decision_by: 'fallback:auto',
+      reason: `Auto-approved (amount ${data.amount} <= 100)`,
+    };
+  }
+  return {
+    status: 'pending',
+    decision_by: 'fallback:human',
+    reason: 'Policy engine unavailable — requires human review',
   };
 }

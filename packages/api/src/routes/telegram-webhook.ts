@@ -1,61 +1,62 @@
-import { Router, Request, Response } from "express";
-import { supabase } from "../lib/supabase.js";
-import axios from "axios";
+import { Router, Request, Response } from 'express';
+import { supabase } from '../lib/supabase.js';
+import { editApprovalMessage } from '../services/telegram.js';
+import { logAudit } from '../services/audit.js';
 
 const router = Router();
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
-// Este endpoint recibe los clicks de los botones de Telegram
-router.post("/callback", async (req: Request, res: Response) => {
+router.post('/callback', async (req: Request, res: Response) => {
   const callbackQuery = req.body.callback_query;
   if (!callbackQuery) {
-    return res.status(200).send("OK"); // Ignorar otros updates de Telegram
+    return res.status(200).send('OK');
   }
 
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
-  const data = callbackQuery.data; // ej: "approve_123e4567-e89b..."
+  const data = callbackQuery.data;
 
-  if (!data || !data.includes("_")) {
-    return res.status(200).send("OK");
+  if (!data || !data.includes('_')) {
+    return res.status(200).send('OK');
   }
 
-  const [action, purchaseId] = data.split("_");
-  const newStatus = action === "approve" ? "approved" : "rejected";
+  const [action, purchaseId] = data.split('_');
+  if (!['approve', 'reject'].includes(action) || !purchaseId) {
+    return res.status(200).send('OK');
+  }
+
+  const newStatus = action === 'approve' ? 'approved' : 'rejected';
   const decisionBy = `telegram_user_${chatId}`;
 
-  // 1. Actualizar en Supabase
-  const { error } = await supabase
-    .from("purchase_requests")
+  // Actualizar en Supabase
+  const { data: purchase, error } = await supabase
+    .from('purchase_requests')
     .update({
       status: newStatus,
       decision_by: decisionBy,
       decided_at: new Date().toISOString(),
     })
-    .eq("id", purchaseId);
+    .eq('id', purchaseId)
+    .eq('status', 'pending')
+    .select()
+    .single();
 
-  if (error) {
-    console.error("Error updating purchase:", error);
-    return res.status(500).send("Error");
+  if (error || !purchase) {
+    console.error('[Webhook] Error updating:', error);
+    return res.status(500).send('Error');
   }
 
-  // 2. Responder a Telegram para quitar los botones y mostrar confirmación
-  const replyText = action === "approve"
-    ? `✅ Compra #${purchaseId.slice(0, 8)} aprobada.`
-    : `❌ Compra #${purchaseId.slice(0, 8)} rechazada.`;
+  // Audit
+  await logAudit('purchase.decided', 'purchase_request', purchaseId, decisionBy, 'telegram_approver', {
+    action,
+    previous_status: 'pending',
+    new_status: newStatus,
+  });
 
-  try {
-    await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
-      chat_id: chatId,
-      message_id: messageId,
-      text: `${callbackQuery.message.text}\n\n_${replyText}_`,
-      parse_mode: "Markdown",
-    });
-  } catch (err) {
-    console.error("Error editing Telegram message:", err);
-  }
+  // Editar mensaje en Telegram
+  await editApprovalMessage(chatId, messageId, callbackQuery.message.text || '', action as 'approve' | 'reject', decisionBy);
 
-  res.status(200).send("OK");
+  res.status(200).send('OK');
 });
 
 export { router as telegramWebhookRouter };
