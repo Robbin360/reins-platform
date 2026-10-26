@@ -83,6 +83,7 @@ function matchesPolicy(policy: any, data: PurchaseRequest): boolean {
   if (policy.category && policy.category !== data.category) return false;
   if (policy.vendor && policy.vendor !== data.vendor) return false;
   if (policy.environment && policy.environment !== data.environment) return false;
+  if (policy.urgency && policy.urgency !== data.urgency) return false; // ← NUEVO: contexto de urgencia
   return true;
 }
 

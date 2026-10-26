@@ -11,6 +11,7 @@ const PolicySchema = z.object({
   category: z.string().nullish(),
   vendor: z.string().nullish(),
   environment: z.enum(['staging', 'production']).nullish(),
+  urgency: z.enum(['low', 'normal', 'critical']).nullish(),
   auto_approve_under: z.number().default(0),
   hard_block_above: z.number().nullish(),
   requires_approval: z.boolean().default(false),
