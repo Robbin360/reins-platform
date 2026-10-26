@@ -1,3 +1,4 @@
+import { policiesRouter } from './routes/policies.js';
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -32,6 +33,7 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 app.use('/v1/policy', policyRouter);
+app.use('/v1/policies', policiesRouter);
 app.use('/v1/purchases', purchasesRouter);
 app.use('/v1/audit', auditRouter);
 app.use('/v1/budget', budgetRouter);
