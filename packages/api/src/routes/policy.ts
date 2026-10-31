@@ -34,10 +34,13 @@ router.post('/evaluate', async (req: Request, res: Response) => {
     urgency: data.urgency,
   });
 
-  await logAudit('policy.evaluated', 'policy', decision.policy_id ?? null, data.agent_id, null, {
-    ...data,
-    decision,
-  });
+  // Solo auditar requests reales, no las de la demo key
+  if (!(req as any).isDemo) {
+    await logAudit('policy.evaluated', 'policy', decision.policy_id ?? null, data.agent_id, null, {
+      ...data,
+      decision,
+    });
+  }
 
   res.json(decision);
 });

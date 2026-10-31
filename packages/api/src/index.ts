@@ -14,18 +14,40 @@ const port = parseInt(process.env.PORT || '3001', 10);
 app.use(cors());
 app.use(express.json());
 
-// Auth middleware
+// Auth middleware: key completa + demo key de solo lectura
 const API_KEY = process.env.REINS_API_KEY;
+const DEMO_KEY = process.env.REINS_DEMO_KEY;
 
 app.use((req: Request, res: Response, next: NextFunction) => {
+  // Endpoints públicos
   if (req.path.startsWith('/webhook/telegram') || req.path === '/health') {
     return next();
   }
-  if (!API_KEY) return next();
-  if (req.headers.authorization !== `Bearer ${API_KEY}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
+
+  // Modo dev: sin keys configuradas, abierto
+  if (!API_KEY && !DEMO_KEY) return next();
+
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+
+  // Acceso completo (admin)
+  if (API_KEY && token === API_KEY) return next();
+
+  // Acceso demo: solo evaluar políticas y listarlas
+  if (DEMO_KEY && token === DEMO_KEY) {
+    const allowed =
+      (req.method === 'POST' && req.path === '/v1/policy/evaluate') ||
+      (req.method === 'GET' && req.path === '/v1/policies');
+    if (allowed) {
+      (req as any).isDemo = true;
+      return next();
+    }
+    return res.status(403).json({
+      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate and GET /v1/policies',
+    });
   }
-  next();
+
+  return res.status(401).json({ error: 'Unauthorized' });
 });
 
 app.get('/health', (_req: Request, res: Response) => {
