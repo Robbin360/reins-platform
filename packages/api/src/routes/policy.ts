@@ -7,10 +7,10 @@ const router = Router();
 
 const EvaluateSchema = z.object({
   agent_id: z.string().min(1),
-  amount: z.number().positive(),
-  category: z.string().min(1),
-  vendor: z.string().min(1).default('unknown'),
-  reason: z.string().optional(),
+  action_type: z.string().min(1),
+  target_resource: z.string().min(1),
+  sensitivity_level: z.enum(['public', 'internal', 'confidential', 'restricted']),
+  actor_identity: z.string().optional(),
   environment: z.enum(['staging', 'production']).optional(),
   urgency: z.enum(['low', 'normal', 'critical']).optional(),
 });
@@ -26,10 +26,10 @@ router.post('/evaluate', async (req: Request, res: Response) => {
 
   const decision = await evaluatePolicy({
     agent_id: data.agent_id,
-    amount: data.amount,
-    category: data.category,
-    vendor: data.vendor,
-    reason: data.reason,
+    action_type: data.action_type,
+    target_resource: data.target_resource,
+    sensitivity_level: data.sensitivity_level,
+    actor_identity: data.actor_identity,
     environment: data.environment,
     urgency: data.urgency,
   });

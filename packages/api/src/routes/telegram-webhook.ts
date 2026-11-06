@@ -1,62 +1,71 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase.js';
-import { editApprovalMessage } from '../services/telegram.js';
 import { logAudit } from '../services/audit.js';
 
 const router = Router();
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
-router.post('/callback', async (req: Request, res: Response) => {
-  const callbackQuery = req.body.callback_query;
-  if (!callbackQuery) {
-    return res.status(200).send('OK');
-  }
+router.post('/', async (req: Request, res: Response) => {
+  const update = req.body;
 
-  const chatId = callbackQuery.message.chat.id;
-  const messageId = callbackQuery.message.message_id;
-  const data = callbackQuery.data;
+  // Respondemos rápido a Telegram para evitar reintentos
+  res.sendStatus(200);
 
-  if (!data || !data.includes('_')) {
-    return res.status(200).send('OK');
-  }
+  if (!update?.callback_query) return;
 
-  const [action, purchaseId] = data.split('_');
-  if (!['approve', 'reject'].includes(action) || !purchaseId) {
-    return res.status(200).send('OK');
-  }
+  const callback = update.callback_query;
+  const [action, requestId] = (callback.data ?? '').split(':');
 
-  const newStatus = action === 'approve' ? 'approved' : 'rejected';
-  const decisionBy = `telegram_user_${chatId}`;
+  if (!action || !requestId) return;
 
-  // Actualizar en Supabase
-  const { data: purchase, error } = await supabase
-    .from('purchase_requests')
+  const approved = action === 'approve';
+  const status = approved ? 'approved' : 'rejected';
+  const decidedBy = `telegram_user_${callback.from?.id ?? 'unknown'}`;
+
+  const { data: row, error } = await supabase
+    .from('action_requests')
     .update({
-      status: newStatus,
-      decision_by: decisionBy,
+      status,
+      decision_by: decidedBy,
+      decision_reason: approved ? 'Approved via Telegram' : 'Rejected via Telegram',
       decided_at: new Date().toISOString(),
     })
-    .eq('id', purchaseId)
-    .eq('status', 'pending')
+    .eq('id', requestId)
     .select()
     .single();
 
-  if (error || !purchase) {
-    console.error('[Webhook] Error updating:', error);
-    return res.status(500).send('Error');
+  if (error || !row) return;
+
+  // Editamos el mensaje original para reflejar la decisión
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = callback.message?.chat?.id;
+  const messageId = callback.message?.message_id;
+
+  if (token && chatId && messageId) {
+    const newText =
+      `🛡️ *Reins — Acción ${approved ? 'APROBADA ✅' : 'RECHAZADA ❌'}*\n\n` +
+      `*Agente:* ${row.agent_id}\n` +
+      `*Acción:* ${row.action_type}\n` +
+      `*Recurso:* ${row.target_resource}\n` +
+      `*Sensibilidad:* ${row.sensitivity_level}\n\n` +
+      `_Decisión: ${status} por ${decidedBy}_`;
+
+    await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: newText,
+        parse_mode: 'Markdown',
+      }),
+    }).catch(() => {});
   }
 
-  // Audit
-  await logAudit('purchase.decided', 'purchase_request', purchaseId, decisionBy, 'telegram_approver', {
-    action,
-    previous_status: 'pending',
-    new_status: newStatus,
+  await logAudit('action.decided', 'action_request', row.id, decidedBy, 'human', {
+    status,
+    action_type: row.action_type,
+    target_resource: row.target_resource,
   });
-
-  // Editar mensaje en Telegram
-  await editApprovalMessage(chatId, messageId, callbackQuery.message.text || '', action as 'approve' | 'reject', decisionBy);
-
-  res.status(200).send('OK');
 });
 
 export { router as telegramWebhookRouter };

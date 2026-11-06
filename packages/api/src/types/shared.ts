@@ -1,10 +1,10 @@
-export type PurchaseStatus = 'approved' | 'rejected' | 'pending' | 'expired';
+export type DecisionStatus = 'approved' | 'rejected' | 'pending' | 'expired';
 export type Environment = 'staging' | 'production';
 export type Urgency = 'low' | 'normal' | 'critical';
-export type TrustLevel = 'low' | 'standard' | 'high';
+export type SensitivityLevel = 'public' | 'internal' | 'confidential' | 'restricted';
 
 export interface PolicyDecision {
-  status: PurchaseStatus;
+  status: DecisionStatus;
   decision_by: string;
   reason: string;
   policy_id?: string;
@@ -13,11 +13,12 @@ export interface PolicyDecision {
 
 export interface PurchaseRequest {
   agent_id: string;
-  amount: number;
-  category: string;
-  vendor: string;
-  reason?: string;
+  action_type: string; // "db_write", "api_call", "infra_provision", "data_export"
+  target_resource: string; // "production_db", "stripe_api", "aws_ec2"
+  sensitivity_level: SensitivityLevel;
+  actor_identity?: string; // ID del SSO corporativo
   environment?: Environment;
   urgency?: Urgency;
+  reason?: string;
   organization_id?: string;
 }
