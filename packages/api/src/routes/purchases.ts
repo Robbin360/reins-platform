@@ -28,6 +28,16 @@ router.post('/request', async (req: Request, res: Response) => {
   const data = parse.data;
   const decision = await evaluatePolicy(data);
 
+  // Demo key: dry-run. Devuelve la decisión sin crear fila ni notificar.
+  if ((req as any).isDemo) {
+    res.json({
+      ...decision,
+      demo: true,
+      note: 'Dry-run mode: policy evaluated, no row created, no notification sent. Self-host to enable Telegram approvals and audit trail.',
+    });
+    return;
+  }
+
   const { data: row, error } = await supabase
     .from('action_requests')
     .insert({
@@ -58,12 +68,10 @@ router.post('/request', async (req: Request, res: Response) => {
     await notifyHuman(row);
   }
 
-  if (!(req as any).isDemo) {
-    await logAudit('action.created', 'action_request', row.id, data.agent_id, null, {
-      ...data,
-      decision,
-    });
-  }
+  await logAudit('action.created', 'action_request', row.id, data.agent_id, null, {
+    ...data,
+    decision,
+  });
 
   res.json({ ...row, decision });
 });
@@ -74,7 +82,7 @@ async function notifyHuman(row: any): Promise<void> {
   if (!token || !chatId) return;
 
   const text =
-    `️ *Reins — Acción requiere aprobación*\n\n` +
+    `🛡️ *Reins — Acción requiere aprobación*\n\n` +
     `*Agente:* ${row.agent_id}\n` +
     `*Acción:* ${row.action_type}\n` +
     `*Recurso:* ${row.target_resource}\n` +

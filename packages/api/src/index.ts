@@ -33,17 +33,18 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   // Acceso completo (admin)
   if (API_KEY && token === API_KEY) return next();
 
-  // Acceso demo: solo evaluar políticas y listarlas
+  // Acceso demo: evaluar políticas, listarlas y dry-run de request_action (sin efectos secundarios)
   if (DEMO_KEY && token === DEMO_KEY) {
     const allowed =
       (req.method === 'POST' && req.path === '/v1/policy/evaluate') ||
-      (req.method === 'GET' && req.path === '/v1/policies');
+      (req.method === 'GET' && req.path === '/v1/policies') ||
+      (req.method === 'POST' && req.path === '/v1/purchases/request');
     if (allowed) {
       (req as any).isDemo = true;
       return next();
     }
     return res.status(403).json({
-      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate and GET /v1/policies',
+      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate, POST /v1/purchases/request (dry-run) and GET /v1/policies',
     });
   }
 
