@@ -134,7 +134,7 @@ create index idx_actions_type on action_requests(action_type);
 create index idx_actions_sensitivity on action_requests(sensitivity_level);
 
 -- =====================================================
--- 5. AUDIT LOG (inmutable)
+-- 5. AUDIT LOG (append-only, protegido por trigger)
 -- =====================================================
 create table audit_log (
   id uuid primary key default uuid_generate_v4(),
@@ -249,3 +249,25 @@ alter table policies enable row level security;
 alter table action_requests enable row level security;
 alter table audit_log enable row level security;
 alter table budget_usage enable row level security;
+
+-- =====================================================
+-- 10. AUDIT LOG APPEND-ONLY (protección a nivel de base)
+-- =====================================================
+-- Rechaza UPDATE, DELETE y TRUNCATE sobre audit_log.
+-- Solo el owner de la base puede deshabilitar estos triggers.
+create or replace function prevent_audit_mutation()
+returns trigger as $$
+begin
+  raise exception 'audit_log is append-only: % not allowed', TG_OP;
+end;
+$$ language plpgsql;
+
+drop trigger if exists audit_log_no_mutation on audit_log;
+create trigger audit_log_no_mutation
+before update or delete on audit_log
+for each row execute function prevent_audit_mutation();
+
+drop trigger if exists audit_log_no_truncate on audit_log;
+create trigger audit_log_no_truncate
+before truncate on audit_log
+for each statement execute function prevent_audit_mutation();
