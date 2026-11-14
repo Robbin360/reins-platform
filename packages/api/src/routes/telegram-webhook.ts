@@ -5,6 +5,16 @@ import { logAudit } from '../services/audit.js';
 const router = Router();
 
 router.post('/', async (req: Request, res: Response) => {
+  // Validación de origen: solo Telegram conoce el secreto.
+  // Fail-closed: si la variable no está configurada, se rechaza todo.
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const provided = req.headers['x-telegram-bot-api-secret-token'];
+  if (!secret || provided !== secret) {
+    console.error('Webhook rechazado: secreto inválido o ausente');
+    res.sendStatus(401);
+    return;
+  }
+
   const update = req.body;
 
   // Respondemos rápido a Telegram para evitar reintentos
