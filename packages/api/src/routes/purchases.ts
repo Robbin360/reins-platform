@@ -26,9 +26,9 @@ router.post('/request', async (req: Request, res: Response) => {
   }
 
   const data = parse.data;
-  const decision = await evaluatePolicy(data);
+  const orgId = (req as any).orgId ?? null;
+  const decision = await evaluatePolicy(data, orgId);
 
-  // Demo key: dry-run. Devuelve la decisión sin crear fila ni notificar.
   if ((req as any).isDemo) {
     res.json({
       ...decision,
@@ -41,7 +41,7 @@ router.post('/request', async (req: Request, res: Response) => {
   const { data: row, error } = await supabase
     .from('action_requests')
     .insert({
-      organization_id: data.organization_id ?? null,
+      organization_id: orgId,
       agent_id: data.agent_id,
       action_type: data.action_type,
       target_resource: data.target_resource,
@@ -71,7 +71,7 @@ router.post('/request', async (req: Request, res: Response) => {
   await logAudit('action.created', 'action_request', row.id, data.agent_id, null, {
     ...data,
     decision,
-  });
+  }, orgId);
 
   res.json({ ...row, decision });
 });

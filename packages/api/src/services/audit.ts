@@ -6,7 +6,8 @@ export async function logAudit(
   entityId: string | null,
   actor: string,
   actorRole: string | null,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  organizationId?: string | null
 ): Promise<void> {
   try {
     await supabase.rpc('log_audit', {
@@ -16,6 +17,7 @@ export async function logAudit(
       p_actor: actor,
       p_actor_role: actorRole,
       p_metadata: metadata,
+      p_organization_id: organizationId ?? null,
     });
   } catch (err) {
     console.error('[Audit] Error logging:', err);

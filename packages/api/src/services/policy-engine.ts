@@ -2,13 +2,21 @@ import { supabase } from '../lib/supabase.js';
 import type { PolicyDecision, PurchaseRequest } from '../types/shared.js';
 
 export async function evaluatePolicy(
-  data: PurchaseRequest
+  data: PurchaseRequest,
+  organizationId?: string | null
 ): Promise<PolicyDecision> {
-  const { data: policies, error } = await supabase
+  // Scoping: políticas globales (org IS NULL) + políticas del tenant
+  let query = supabase
     .from('policies')
     .select('*')
     .eq('is_active', true)
     .order('priority', { ascending: true });
+
+  if (organizationId) {
+    query = query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
+  }
+
+  const { data: policies, error } = await query;
 
   if (error || !policies) {
     console.error('Policy fetch error:', error);
@@ -18,7 +26,6 @@ export async function evaluatePolicy(
   for (const policy of policies) {
     if (!matchesPolicy(policy, data)) continue;
 
-    // Regla: bloqueo duro (acciones prohibidas)
     if (policy.hard_block) {
       return {
         status: 'rejected',
@@ -28,7 +35,6 @@ export async function evaluatePolicy(
       };
     }
 
-    // Regla: bloqueo por fin de semana
     if (policy.block_weekends && isWeekend()) {
       return {
         status: 'rejected',
@@ -38,7 +44,6 @@ export async function evaluatePolicy(
       };
     }
 
-    // Regla: bloqueo fuera de horario laboral
     if (policy.block_outside_hours && isOutsideWorkHours(policy)) {
       return {
         status: 'rejected',
@@ -48,7 +53,6 @@ export async function evaluatePolicy(
       };
     }
 
-    // Regla: auto-aprobación
     if (policy.auto_approve) {
       return {
         status: 'approved',
@@ -58,7 +62,6 @@ export async function evaluatePolicy(
       };
     }
 
-    // Regla: requiere aprobación humana
     if (policy.requires_approval) {
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       return {
@@ -71,7 +74,6 @@ export async function evaluatePolicy(
     }
   }
 
-  // Sin política que aplique: aprobar por defecto (fail-open)
   return {
     status: 'approved',
     decision_by: 'policy:default',
@@ -100,7 +102,6 @@ function isOutsideWorkHours(policy: any): boolean {
 }
 
 function fallbackDecision(data: PurchaseRequest): PolicyDecision {
-  // Acciones de alta sensibilidad requieren revisión humana incluso si el motor falla
   if (data.sensitivity_level === 'restricted' || data.sensitivity_level === 'confidential') {
     return {
       status: 'pending',
@@ -108,7 +109,6 @@ function fallbackDecision(data: PurchaseRequest): PolicyDecision {
       reason: `Policy engine unavailable — ${data.sensitivity_level} sensitivity requires human review`,
     };
   }
-  // Acciones de baja sensibilidad se auto-aprueban como fallback
   return {
     status: 'approved',
     decision_by: 'fallback:auto',

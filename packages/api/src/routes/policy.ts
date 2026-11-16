@@ -23,6 +23,7 @@ router.post('/evaluate', async (req: Request, res: Response) => {
   }
 
   const data = parse.data;
+  const orgId = (req as any).orgId ?? null;
 
   const decision = await evaluatePolicy({
     agent_id: data.agent_id,
@@ -32,14 +33,13 @@ router.post('/evaluate', async (req: Request, res: Response) => {
     actor_identity: data.actor_identity,
     environment: data.environment,
     urgency: data.urgency,
-  });
+  }, orgId);
 
-  // Solo auditar requests reales, no las de la demo key
   if (!(req as any).isDemo) {
     await logAudit('policy.evaluated', 'policy', decision.policy_id ?? null, data.agent_id, null, {
       ...data,
       decision,
-    });
+    }, orgId);
   }
 
   res.json(decision);

@@ -19,22 +19,24 @@ const actionShape = {
 };
 
 function buildServer(req: Request): McpServer {
-  const server = new McpServer({ name: 'reins', version: '0.3.0' });
+  const server = new McpServer({ name: 'reins', version: '0.4.0' });
   const isDemo = Boolean((req as any).isDemo);
+  const orgId: string | null = (req as any).orgId ?? null;
 
   server.tool('check_policy', 'Dry-run security policy evaluation', actionShape, async (args) => {
-    const decision = await evaluatePolicy(args as any);
+    const decision = await evaluatePolicy(args as any, orgId);
     return { content: [{ type: 'text', text: JSON.stringify(decision) }] };
   });
 
   server.tool('request_action', 'Request an action through the security gateway', actionShape, async (args) => {
-    const decision = await evaluatePolicy(args as any);
+    const decision = await evaluatePolicy(args as any, orgId);
     if (isDemo) {
       return { content: [{ type: 'text', text: JSON.stringify({ ...decision, demo: true }) }] };
     }
     const { data: row, error } = await supabase
       .from('action_requests')
       .insert({
+        organization_id: orgId,
         agent_id: args.agent_id,
         action_type: args.action_type,
         target_resource: args.target_resource,
@@ -51,33 +53,44 @@ function buildServer(req: Request): McpServer {
       .select()
       .single();
     if (error) return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
-    await logAudit('action.created', 'action_request', row.id, args.agent_id, null, { ...args, decision });
+    await logAudit('action.created', 'action_request', row.id, args.agent_id, null, { ...args, decision }, orgId);
     return { content: [{ type: 'text', text: JSON.stringify({ ...row, decision }) }] };
   });
 
   server.tool('approve_action', 'Approve a pending action by id (human confirms in chat)', { id: z.string() }, async ({ id }) => {
+    let query = supabase.from('action_requests').select('*').eq('id', id);
+    if (orgId) query = query.eq('organization_id', orgId);
+    const { data: existing, error: findErr } = await query.single();
+    if (findErr || !existing) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+
     const { data: row, error } = await supabase
       .from('action_requests')
       .update({ status: 'approved', decision_by: 'human:chat', decision_reason: 'Approved via chat', decided_at: new Date().toISOString() })
       .eq('id', id).select().single();
-    if (error || !row) return { content: [{ type: 'text', text: 'Action not found' }] };
-    await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'approved' });
+    if (error || !row) return { content: [{ type: 'text', text: 'Update failed' }] };
+    await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'approved' }, orgId);
     return { content: [{ type: 'text', text: `APPROVED ${id}` }] };
   });
 
   server.tool('reject_action', 'Reject a pending action by id (human denies in chat)', { id: z.string() }, async ({ id }) => {
+    let query = supabase.from('action_requests').select('*').eq('id', id);
+    if (orgId) query = query.eq('organization_id', orgId);
+    const { data: existing, error: findErr } = await query.single();
+    if (findErr || !existing) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+
     const { data: row, error } = await supabase
       .from('action_requests')
       .update({ status: 'rejected', decision_by: 'human:chat', decision_reason: 'Rejected via chat', decided_at: new Date().toISOString() })
       .eq('id', id).select().single();
-    if (error || !row) return { content: [{ type: 'text', text: 'Action not found' }] };
-    await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'rejected' });
+    if (error || !row) return { content: [{ type: 'text', text: 'Update failed' }] };
+    await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'rejected' }, orgId);
     return { content: [{ type: 'text', text: `REJECTED ${id}` }] };
   });
 
   server.tool('get_audit_trail', 'Read recent audit entries', { limit: z.number().min(1).max(200).optional() }, async ({ limit }) => {
-    const { data, error } = await supabase
-      .from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit ?? 20);
+    let query = supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit ?? 20);
+    if (orgId) query = query.eq('organization_id', orgId);
+    const { data, error } = await query;
     if (error) return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
     return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   });
