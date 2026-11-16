@@ -7,6 +7,7 @@ import { purchasesRouter } from './routes/purchases.js';
 import { telegramWebhookRouter } from './routes/telegram-webhook.js';
 import { auditRouter } from './routes/audit.js';
 import { budgetRouter } from './routes/budget.js';
+import { mcpRouter } from './routes/mcp.js';
 
 const app = express();
 const port = parseInt(process.env.PORT || '3001', 10);
@@ -33,18 +34,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   // Acceso completo (admin)
   if (API_KEY && token === API_KEY) return next();
 
-  // Acceso demo: evaluar políticas, listarlas y dry-run de request_action (sin efectos secundarios)
+  // Acceso demo: evaluar, listar, dry-run de request_action y MCP hosteado (sin efectos)
   if (DEMO_KEY && token === DEMO_KEY) {
     const allowed =
       (req.method === 'POST' && req.path === '/v1/policy/evaluate') ||
       (req.method === 'GET' && req.path === '/v1/policies') ||
-      (req.method === 'POST' && req.path === '/v1/purchases/request');
+      (req.method === 'POST' && req.path === '/v1/purchases/request') ||
+      (req.method === 'POST' && req.path === '/mcp');
     if (allowed) {
       (req as any).isDemo = true;
       return next();
     }
     return res.status(403).json({
-      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate, POST /v1/purchases/request (dry-run) and GET /v1/policies',
+      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate, POST /v1/purchases/request (dry-run), GET /v1/policies, POST /mcp (dry-run)',
     });
   }
 
@@ -52,7 +54,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '0.2.0' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '0.3.0' });
 });
 
 app.use('/v1/policy', policyRouter);
@@ -61,7 +63,8 @@ app.use('/v1/purchases', purchasesRouter);
 app.use('/v1/audit', auditRouter);
 app.use('/v1/budget', budgetRouter);
 app.use('/webhook/telegram', telegramWebhookRouter);
+app.use('/mcp', mcpRouter);
 
 app.listen(port, () => {
-  console.log(`🚀 Reins API v0.2 listening on http://localhost:${port}`);
+  console.log(`🚀 Reins API v0.3 listening on http://localhost:${port}`);
 });
