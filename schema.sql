@@ -1,5 +1,5 @@
 -- =====================================================
--- REINS — SCHEMA COMPLETO (v0.3 - Security Gateway)
+-- REINS — SCHEMA COMPLETO (v0.4 - Security Gateway multi-tenant)
 -- =====================================================
 -- Instrucciones: pegá todo este archivo en Supabase → SQL Editor
 -- y ejecutalo. Va a borrar las tablas existentes y recrearlas.
@@ -26,6 +26,7 @@ create table organizations (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
   slug text unique not null,
+  api_key_hash text unique,          -- hash sha256 de la API key del tenant (multi-tenant)
   telegram_chat_id text,
   telegram_bot_token text,
   created_at timestamptz default now(),
@@ -134,7 +135,7 @@ create index idx_actions_type on action_requests(action_type);
 create index idx_actions_sensitivity on action_requests(sensitivity_level);
 
 -- =====================================================
--- 5. AUDIT LOG (append-only, protegido por trigger)
+-- 5. AUDIT LOG (append-only, protegido por trigger, multi-tenant)
 -- =====================================================
 create table audit_log (
   id uuid primary key default uuid_generate_v4(),
@@ -143,6 +144,7 @@ create table audit_log (
   entity_id uuid,
   actor text,
   actor_role text,
+  organization_id uuid references organizations(id) on delete set null,  -- tenant dueño del evento
   metadata jsonb default '{}',
   ip_address text,
   created_at timestamptz default now()
@@ -151,6 +153,7 @@ create table audit_log (
 create index idx_audit_event on audit_log(event_type);
 create index idx_audit_entity on audit_log(entity_type, entity_id);
 create index idx_audit_created on audit_log(created_at desc);
+create index idx_audit_org on audit_log(organization_id);
 
 -- =====================================================
 -- 6. PRESUPUESTOS (tracking de uso - adaptado a acciones)
@@ -194,11 +197,12 @@ create or replace function log_audit(
   p_entity_id uuid,
   p_actor text,
   p_actor_role text,
-  p_metadata jsonb
+  p_metadata jsonb,
+  p_organization_id uuid default null
 ) returns void as $$
 begin
-  insert into audit_log (event_type, entity_type, entity_id, actor, actor_role, metadata)
-  values (p_event_type, p_entity_type, p_entity_id, p_actor, p_actor_role, p_metadata);
+  insert into audit_log (event_type, entity_type, entity_id, actor, actor_role, metadata, organization_id)
+  values (p_event_type, p_entity_type, p_entity_id, p_actor, p_actor_role, p_metadata, p_organization_id);
 end;
 $$ language plpgsql;
 
@@ -209,7 +213,7 @@ insert into organizations (name, slug)
 values ('Default Organization', 'default')
 on conflict (slug) do nothing;
 
--- Políticas de seguridad (reemplazan las de gasto)
+-- Políticas de seguridad (organization_id NULL = defaults globales que heredan todos los tenants)
 insert into policies (name, description, action_type, sensitivity_level, requires_approval, priority) values
   ('Block production DB writes without human approval',
    'Cualquier write en base de datos de producción requiere aprobación humana',
