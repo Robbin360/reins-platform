@@ -95,6 +95,45 @@ function buildServer(req: Request): McpServer {
     return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   });
 
+  server.tool('list_policies', 'List policies that apply to you (your own + global defaults)', {}, async () => {
+    let q = supabase.from('policies').select('*').eq('is_active', true).order('priority', { ascending: true });
+    if (orgId) q = q.or(`organization_id.is.null,organization_id.eq.${orgId}`);
+    const { data, error } = await q;
+    if (error) return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+  });
+
+  server.tool('add_policy', 'Create a security policy for your organization', {
+    name: z.string(),
+    description: z.string().optional(),
+    action_type: z.string().optional(),
+    target_resource: z.string().optional(),
+    sensitivity_level: z.enum(['public', 'internal', 'confidential', 'restricted']).optional(),
+    environment: z.enum(['staging', 'production']).optional(),
+    requires_approval: z.boolean().optional(),
+    auto_approve: z.boolean().optional(),
+    hard_block: z.boolean().optional(),
+    priority: z.number().optional(),
+  }, async (args) => {
+    if (isDemo) return { content: [{ type: 'text', text: 'Demo key cannot create policies. Use a tenant key.' }] };
+    const { data, error } = await supabase.from('policies').insert({
+      organization_id: orgId,
+      name: args.name,
+      description: args.description ?? null,
+      action_type: args.action_type ?? null,
+      target_resource: args.target_resource ?? null,
+      sensitivity_level: args.sensitivity_level ?? null,
+      environment: args.environment ?? null,
+      requires_approval: args.requires_approval ?? false,
+      auto_approve: args.auto_approve ?? false,
+      hard_block: args.hard_block ?? false,
+      priority: args.priority ?? 100,
+    }).select().single();
+    if (error) return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+    await logAudit('policy.created', 'policy', data.id, 'human:chat', 'human', { name: args.name }, orgId);
+    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+  });
+
   return server;
 }
 
