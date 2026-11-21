@@ -41,20 +41,21 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
     return next();
   }
 
-  // Demo: evaluar, listar, dry-run y MCP hosteado (sin efectos)
+  // Demo: dry-run, solo defaults globales, sin tocar datos de tenants.
+  // Scopeada a un org "nil" (UUID que no existe) para que get_audit_trail
+  // devuelva vacío, approve/reject rechace cross-tenant, y policies solo vea defaults.
   if (DEMO_KEY && token === DEMO_KEY) {
     const allowed =
       (req.method === 'POST' && req.path === '/v1/policy/evaluate') ||
-      (req.method === 'GET' && req.path === '/v1/policies') ||
       (req.method === 'POST' && req.path === '/v1/purchases/request') ||
       (req.method === 'POST' && req.path === '/mcp');
     if (allowed) {
       (req as any).isDemo = true;
-      (req as any).orgId = null;
+      (req as any).orgId = '00000000-0000-0000-0000-000000000000';
       return next();
     }
     return res.status(403).json({
-      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate, POST /v1/purchases/request (dry-run), GET /v1/policies, POST /mcp (dry-run)',
+      error: 'Demo key is read-only. Allowed: POST /v1/policy/evaluate, POST /v1/purchases/request (dry-run), POST /mcp (dry-run)',
     });
   }
 
