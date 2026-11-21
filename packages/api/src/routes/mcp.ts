@@ -8,12 +8,15 @@ import { logAudit } from '../services/audit.js';
 
 const router = Router();
 
-// Verificación de ownership de Glama: público, sin auth, sin redirect, antes del handler MCP
+// Verificación de ownership de Glama: público, sin auth, sin redirect, antes del handler MCP.
+// writeHead + end para mandar Content-Type exacto "application/json" (sin charset).
 router.get('/.well-known/glama.json', (_req: Request, res: Response) => {
-  res.json({
+  const body = JSON.stringify({
     $schema: 'https://glama.ai/mcp/schemas/connector.json',
     claim: 'glama_claim_Qn_3Z1kTvojJm_b009R9swzBbS-20xi-e',
   });
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(body);
 });
 
 const actionShape = {
