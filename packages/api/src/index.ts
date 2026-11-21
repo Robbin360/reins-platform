@@ -23,8 +23,8 @@ const API_KEY = process.env.REINS_API_KEY;
 const DEMO_KEY = process.env.REINS_DEMO_KEY;
 
 app.use(async (req: Request, res: Response, next: NextFunction) => {
-  // Endpoints públicos
-  if (req.path.startsWith('/webhook/telegram') || req.path === '/health') {
+  // Endpoints públicos (incluye el claim de ownership de Glama, GET sin auth)
+  if (req.path.startsWith('/webhook/telegram') || req.path === '/health' || (req.method === 'GET' && req.path === '/mcp/.well-known/glama.json')) {
     return next();
   }
 
