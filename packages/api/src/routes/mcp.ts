@@ -8,6 +8,14 @@ import { logAudit } from '../services/audit.js';
 
 const router = Router();
 
+// Verificación de ownership de Glama: público, sin auth, sin redirect, antes del handler MCP
+router.get('/.well-known/glama.json', (_req: Request, res: Response) => {
+  res.json({
+    $schema: 'https://glama.ai/mcp/schemas/connector.json',
+    claim: 'glama_claim_Qn_3Z1kTvojJm_b009R9swzBbS-20xi-e',
+  });
+});
+
 const actionShape = {
   agent_id: z.string(),
   action_type: z.string(),
