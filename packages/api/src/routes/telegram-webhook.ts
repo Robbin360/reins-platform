@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { logAudit } from '../services/audit.js';
+import { keysEqual } from '../lib/keys.js';
 
 const router = Router();
 
@@ -8,8 +9,9 @@ router.post('/', async (req: Request, res: Response) => {
   // Validación de origen: solo Telegram conoce el secreto.
   // Fail-closed: si la variable no está configurada, se rechaza todo.
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  const provided = req.headers['x-telegram-bot-api-secret-token'];
-  if (!secret || provided !== secret) {
+  const providedHeader = req.headers['x-telegram-bot-api-secret-token'];
+  const provided = Array.isArray(providedHeader) ? providedHeader[0] : providedHeader;
+  if (!secret || !keysEqual(provided, secret)) {
     console.error('Webhook rechazado: secreto inválido o ausente');
     res.sendStatus(401);
     return;
@@ -30,6 +32,20 @@ router.post('/', async (req: Request, res: Response) => {
   const approved = action === 'approve';
   const status = approved ? 'approved' : 'rejected';
   const decidedBy = `telegram_user_${callback.from?.id ?? 'unknown'}`;
+  const chatId = callback.message?.chat?.id;
+  if (!chatId) return;
+
+  // El chat debe estar asociado a una organización; la acción debe ser de ese org.
+  const { data: org, error: orgError } = await supabase
+    .from('organizations')
+    .select('id, telegram_bot_token')
+    .eq('telegram_chat_id', String(chatId))
+    .maybeSingle();
+
+  if (orgError || !org) {
+    console.error('Webhook rechazado: chat no asociado a una organización');
+    return;
+  }
 
   const { data: row, error } = await supabase
     .from('action_requests')
@@ -40,17 +56,19 @@ router.post('/', async (req: Request, res: Response) => {
       decided_at: new Date().toISOString(),
     })
     .eq('id', requestId)
+    .eq('organization_id', org.id)
+    .eq('status', 'pending')
     .select()
     .single();
 
+  // 0 filas: acción inexistente, de otro org, o ya decidida. No auditar ni mutar.
   if (error || !row) return;
 
   // Editamos el mensaje original para reflejar la decisión
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = callback.message?.chat?.id;
+  const token = org.telegram_bot_token;
   const messageId = callback.message?.message_id;
 
-  if (token && chatId && messageId) {
+  if (token && messageId) {
     const newText =
       `🛡️ *Reins — Acción ${approved ? 'APROBADA ✅' : 'RECHAZADA ❌'}*\n\n` +
       `*Agente:* ${row.agent_id}\n` +
@@ -75,7 +93,7 @@ router.post('/', async (req: Request, res: Response) => {
     status,
     action_type: row.action_type,
     target_resource: row.target_resource,
-  });
+  }, org.id);
 });
 
 export { router as telegramWebhookRouter };

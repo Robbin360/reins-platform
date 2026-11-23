@@ -6,87 +6,61 @@ import { logAudit } from '../services/audit.js';
 const router = Router();
 
 const PolicySchema = z.object({
-  name: z.string().min(1),
+  name: z.string(),
   description: z.string().optional(),
-  category: z.string().nullish(),
-  vendor: z.string().nullish(),
-  environment: z.enum(['staging', 'production']).nullish(),
-  urgency: z.enum(['low', 'normal', 'critical']).nullish(),
-  auto_approve_under: z.number().default(0),
-  hard_block_above: z.number().nullish(),
-  requires_approval: z.boolean().default(false),
-  block_weekends: z.boolean().default(false),
-  block_outside_hours: z.boolean().default(false),
-  work_hours_start: z.number().default(9),
-  work_hours_end: z.number().default(18),
-  priority: z.number().default(100),
-  is_active: z.boolean().default(true),
+  action_type: z.string().optional(),
+  target_resource: z.string().optional(),
+  sensitivity_level: z.enum(['public','internal','confidential','restricted']).optional(),
+  environment: z.enum(['staging','production']).optional(),
+  requires_approval: z.boolean().optional(),
+  auto_approve: z.boolean().optional(),
+  hard_block: z.boolean().optional(),
+  priority: z.number().optional(),
+  work_hours_tz: z.string().optional(),
 });
 
-// Listar políticas
-router.get('/', async (_req: Request, res: Response) => {
-  const { data, error } = await supabase
-    .from('policies')
-    .select('*')
-    .eq('is_active', true)
-    .order('priority', { ascending: true });
-
+router.get('/', async (req: Request, res: Response) => {
+  const orgId = (req as any).orgId ?? null;
+  let q = supabase.from('policies').select('*').order('priority', { ascending: true });
+  if (orgId) q = q.or(`organization_id.is.null,organization_id.eq.${orgId}`);
+  const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// Crear política
 router.post('/', async (req: Request, res: Response) => {
-  const parse = PolicySchema.safeParse(req.body);
-  if (!parse.success) {
-    return res.status(400).json({ error: 'Invalid input', details: parse.error });
-  }
-
-  const { data, error } = await supabase
-    .from('policies')
-    .insert(parse.data)
-    .select()
-    .single();
-
+  const parsed = PolicySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const orgId = (req as any).orgId ?? null;
+  const isAdmin = Boolean((req as any).isAdmin);
+  const organization_id = isAdmin ? (req.body.organization_id ?? null) : orgId;
+  if (!isAdmin && organization_id === null) return res.status(403).json({ error: 'Only admin can create global policies' });
+  const { data, error } = await supabase.from('policies').insert({ ...parsed.data, organization_id }).select().single();
   if (error) return res.status(500).json({ error: error.message });
-
-  await logAudit('policy.created', 'policy', data.id, 'admin:api', null, parse.data);
+  await logAudit('policy.created', 'policy', data.id, 'human:rest', 'human', { name: parsed.data.name }, orgId);
   res.status(201).json(data);
 });
 
-// Actualizar política
 router.put('/:id', async (req: Request, res: Response) => {
-  const parse = PolicySchema.partial().safeParse(req.body);
-  if (!parse.success) {
-    return res.status(400).json({ error: 'Invalid input', details: parse.error });
-  }
-
-  const { data, error } = await supabase
-    .from('policies')
-    .update(parse.data)
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error) return res.status(404).json({ error: 'Policy not found' });
-
-  await logAudit('policy.updated', 'policy', data.id, 'admin:api', null, parse.data);
+  const orgId = (req as any).orgId ?? null;
+  const parsed = PolicySchema.partial().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  let q = supabase.from('policies').update(parsed.data).eq('id', req.params.id);
+  if (orgId) q = q.eq('organization_id', orgId);
+  const { data, error } = await q.select().single();
+  if (error || !data) return res.status(404).json({ error: 'Policy not found or not accessible' });
+  await logAudit('policy.updated', 'policy', data.id, 'human:rest', 'human', parsed.data, orgId);
   res.json(data);
 });
 
-// Desactivar política (soft delete)
 router.delete('/:id', async (req: Request, res: Response) => {
-  const { data, error } = await supabase
-    .from('policies')
-    .update({ is_active: false })
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error) return res.status(404).json({ error: 'Policy not found' });
-
-  await logAudit('policy.deactivated', 'policy', data.id, 'admin:api', null, {});
-  res.json(data);
+  const orgId = (req as any).orgId ?? null;
+  let q = supabase.from('policies').update({ is_active: false }).eq('id', req.params.id);
+  if (orgId) q = q.eq('organization_id', orgId);
+  const { data, error } = await q.select().single();
+  if (error || !data) return res.status(404).json({ error: 'Policy not found or not accessible' });
+  await logAudit('policy.deleted', 'policy', data.id, 'human:rest', 'human', {}, orgId);
+  res.json({ deleted: data.id });
 });
 
 export { router as policiesRouter };

@@ -14,6 +14,9 @@ export async function evaluatePolicy(
 
   if (organizationId) {
     query = query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
+  } else {
+    // Sin tenant (admin): solo políticas globales, nunca las de otros tenants.
+    query = query.is('organization_id', null);
   }
 
   const { data: policies, error } = await query;

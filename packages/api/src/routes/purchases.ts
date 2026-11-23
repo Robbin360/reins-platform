@@ -64,22 +64,35 @@ router.post('/request', async (req: Request, res: Response) => {
     return;
   }
 
-  if (decision.status === 'pending') {
-    await notifyHuman(row);
-  }
+  const notification = decision.status === 'pending' ? await notifyHuman(row) : undefined;
 
   await logAudit('action.created', 'action_request', row.id, data.agent_id, null, {
     ...data,
     decision,
+    ...(notification ? { notification } : {}),
   }, orgId);
 
   res.json({ ...row, decision });
 });
 
-async function notifyHuman(row: any): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
+async function notifyHuman(row: any): Promise<'sent' | 'unconfigured' | 'failed'> {
+  if (!row.organization_id) return 'unconfigured';
+
+  const { data: org, error } = await supabase
+    .from('organizations')
+    .select('telegram_chat_id, telegram_bot_token')
+    .eq('id', row.organization_id)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Telegram org config error:', error);
+    return 'failed';
+  }
+
+  const token = org?.telegram_bot_token;
+  const chatId = org?.telegram_chat_id;
+  // Sin fallback a un chat compartido: cada tenant usa su propia configuración.
+  if (!token || !chatId) return 'unconfigured';
 
   const text =
     `🛡️ *Reins — Acción requiere aprobación*\n\n` +
@@ -92,7 +105,7 @@ async function notifyHuman(row: any): Promise<void> {
     `_Política:_ ${row.decision_reason}`;
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -109,8 +122,14 @@ async function notifyHuman(row: any): Promise<void> {
         },
       }),
     });
+    if (!response.ok) {
+      console.error('Telegram notify error:', response.status);
+      return 'failed';
+    }
+    return 'sent';
   } catch (err) {
     console.error('Telegram notify error:', err);
+    return 'failed';
   }
 }
 

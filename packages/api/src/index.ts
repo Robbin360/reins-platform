@@ -10,7 +10,7 @@ import { budgetRouter } from './routes/budget.js';
 import { mcpRouter } from './routes/mcp.js';
 import { orgsRouter } from './routes/orgs.js';
 import { supabase } from './lib/supabase.js';
-import { hashKey } from './lib/keys.js';
+import { hashKey, keysEqual } from './lib/keys.js';
 
 const app = express();
 const port = parseInt(process.env.PORT || '3001', 10);
@@ -22,20 +22,30 @@ app.use(express.json());
 const API_KEY = process.env.REINS_API_KEY;
 const DEMO_KEY = process.env.REINS_DEMO_KEY;
 
+if (process.env.NODE_ENV === 'production' && !API_KEY) {
+  console.error('FATAL: REINS_API_KEY required in production');
+  process.exit(1);
+}
+
 app.use(async (req: Request, res: Response, next: NextFunction) => {
   // Endpoints públicos (incluye el claim de ownership de Glama, GET sin auth)
   if (req.path.startsWith('/webhook/telegram') || req.path === '/health' || (req.method === 'GET' && req.path === '/mcp/.well-known/glama.json')) {
     return next();
   }
 
-  // Modo dev: sin keys configuradas, abierto
-  if (!API_KEY && !DEMO_KEY) return next();
+  // Modo dev: sin keys configuradas, abierto solo fuera de producción
+  if (!API_KEY && !DEMO_KEY) {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(503).json({ error: 'API authentication is not configured' });
+    }
+    return next();
+  }
 
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
 
   // Admin global (key de entorno): ve todo, sin org
-  if (API_KEY && token === API_KEY) {
+  if (keysEqual(token, API_KEY)) {
     (req as any).isAdmin = true;
     (req as any).orgId = null;
     return next();
@@ -44,7 +54,7 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
   // Demo: dry-run, solo defaults globales, sin tocar datos de tenants.
   // Scopeada a un org "nil" (UUID que no existe) para que get_audit_trail
   // devuelva vacío, approve/reject rechace cross-tenant, y policies solo vea defaults.
-  if (DEMO_KEY && token === DEMO_KEY) {
+  if (keysEqual(token, DEMO_KEY)) {
     const allowed =
       (req.method === 'POST' && req.path === '/v1/policy/evaluate') ||
       (req.method === 'POST' && req.path === '/v1/purchases/request') ||
