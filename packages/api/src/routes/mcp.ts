@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { evaluatePolicy } from '../services/policy-engine.js';
 import { logAudit } from '../services/audit.js';
+import { expireActionIfNeeded } from '../services/action-expiry.js';
 
 const router = Router();
 
@@ -71,13 +72,17 @@ function buildServer(req: Request): McpServer {
   server.tool('approve_action', 'Approve a pending action by id (human confirms in chat)', { id: z.string() }, async ({ id }) => {
     let query = supabase.from('action_requests').select('*').eq('id', id);
     if (orgId) query = query.eq('organization_id', orgId);
-    const { data: existing, error: findErr } = await query.single();
-    if (findErr || !existing) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+    const { data: found, error: findErr } = await query.single();
+    if (findErr || !found) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+
+    const existing = await expireActionIfNeeded(found);
+    if (existing.status === 'expired') return { content: [{ type: 'text', text: 'Error: Action has expired' }] };
+    if (existing.status !== 'pending') return { content: [{ type: 'text', text: 'Error: Action is not pending' }] };
 
     const { data: row, error } = await supabase
       .from('action_requests')
       .update({ status: 'approved', decision_by: 'human:chat', decision_reason: 'Approved via chat', decided_at: new Date().toISOString() })
-      .eq('id', id).select().single();
+      .eq('id', id).eq('status', 'pending').select().single();
     if (error || !row) return { content: [{ type: 'text', text: 'Update failed' }] };
     await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'approved' }, orgId);
     return { content: [{ type: 'text', text: `APPROVED ${id}` }] };
@@ -86,23 +91,34 @@ function buildServer(req: Request): McpServer {
   server.tool('reject_action', 'Reject a pending action by id (human denies in chat)', { id: z.string() }, async ({ id }) => {
     let query = supabase.from('action_requests').select('*').eq('id', id);
     if (orgId) query = query.eq('organization_id', orgId);
-    const { data: existing, error: findErr } = await query.single();
-    if (findErr || !existing) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+    const { data: found, error: findErr } = await query.single();
+    if (findErr || !found) return { content: [{ type: 'text', text: 'Action not found or not accessible' }] };
+
+    const existing = await expireActionIfNeeded(found);
+    if (existing.status === 'expired') return { content: [{ type: 'text', text: 'Error: Action has expired' }] };
+    if (existing.status !== 'pending') return { content: [{ type: 'text', text: 'Error: Action is not pending' }] };
 
     const { data: row, error } = await supabase
       .from('action_requests')
       .update({ status: 'rejected', decision_by: 'human:chat', decision_reason: 'Rejected via chat', decided_at: new Date().toISOString() })
-      .eq('id', id).select().single();
+      .eq('id', id).eq('status', 'pending').select().single();
     if (error || !row) return { content: [{ type: 'text', text: 'Update failed' }] };
     await logAudit('action.decided', 'action_request', row.id, 'human:chat', 'human', { status: 'rejected' }, orgId);
     return { content: [{ type: 'text', text: `REJECTED ${id}` }] };
   });
 
   server.tool('get_audit_trail', 'Read recent audit entries', { limit: z.number().min(1).max(200).optional() }, async ({ limit }) => {
-    let query = supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit ?? 20);
+    const effectiveLimit = limit ?? 20;
+    let query = supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(effectiveLimit);
     if (orgId) query = query.eq('organization_id', orgId);
     const { data, error } = await query;
     if (error) return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+    if (!isDemo) {
+      await logAudit('audit.read', 'audit_log', null, 'agent:mcp', null, {
+        limit: effectiveLimit,
+        rows: data?.length ?? 0,
+      }, orgId);
+    }
     return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   });
 

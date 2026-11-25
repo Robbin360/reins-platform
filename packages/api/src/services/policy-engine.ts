@@ -10,7 +10,8 @@ export async function evaluatePolicy(
     .from('policies')
     .select('*')
     .eq('is_active', true)
-    .order('priority', { ascending: true });
+    .order('priority', { ascending: true })
+    .order('created_at', { ascending: true });
 
   if (organizationId) {
     query = query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
@@ -26,7 +27,29 @@ export async function evaluatePolicy(
     return fallbackDecision(data);
   }
 
-  for (const policy of policies) {
+  // Precedencia: primero las políticas propias del tenant, luego las globales.
+  // Dentro de cada grupo ya vienen ordenadas por priority y created_at.
+  const orderedPolicies = organizationId
+    ? [
+        ...policies.filter((policy) => policy.organization_id === organizationId),
+        ...policies.filter((policy) => policy.organization_id === null),
+      ]
+    : policies;
+
+  // Un hard_block global es un piso: ninguna regla del tenant puede sobreescribirlo.
+  const globalHardBlock = orderedPolicies.find(
+    (policy) => policy.organization_id === null && policy.hard_block && matchesPolicy(policy, data)
+  );
+  if (globalHardBlock) {
+    return {
+      status: 'rejected',
+      decision_by: `policy:${globalHardBlock.id}`,
+      reason: `Action blocked: ${globalHardBlock.description || globalHardBlock.name}`,
+      policy_id: globalHardBlock.id,
+    };
+  }
+
+  for (const policy of orderedPolicies) {
     if (!matchesPolicy(policy, data)) continue;
 
     if (policy.hard_block) {
@@ -38,7 +61,7 @@ export async function evaluatePolicy(
       };
     }
 
-    if (policy.block_weekends && isWeekend()) {
+    if (policy.block_weekends && isWeekend(policy)) {
       return {
         status: 'rejected',
         decision_by: `policy:${policy.id}`,
@@ -77,10 +100,23 @@ export async function evaluatePolicy(
     }
   }
 
+  // Fail-closed para producción o datos sensibles cuando no hay ninguna regla.
+  if (
+    data.environment === 'production' ||
+    data.sensitivity_level === 'confidential' ||
+    data.sensitivity_level === 'restricted'
+  ) {
+    return {
+      status: 'pending',
+      decision_by: 'default:no-match',
+      reason: 'No matching policy — production or sensitive action requires human review',
+    };
+  }
+
   return {
     status: 'approved',
-    decision_by: 'policy:default',
-    reason: 'No matching policy — auto-approved',
+    decision_by: 'default:no-match',
+    reason: 'No matching policy — public/internal staging action auto-approved',
   };
 }
 
@@ -93,28 +129,34 @@ function matchesPolicy(policy: any, data: PurchaseRequest): boolean {
   return true;
 }
 
-function isWeekend(): boolean {
-  const day = new Date().getUTCDay();
-  return day === 0 || day === 6;
+function getZonedDateParts(policy: any): { hour: number; weekday: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: policy.work_hours_tz ?? 'UTC',
+    hour: 'numeric',
+    weekday: 'short',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+
+  return {
+    hour: Number(parts.find((part) => part.type === 'hour')?.value),
+    weekday: parts.find((part) => part.type === 'weekday')?.value ?? '',
+  };
+}
+
+function isWeekend(policy: any): boolean {
+  const { weekday } = getZonedDateParts(policy);
+  return weekday === 'Sat' || weekday === 'Sun';
 }
 
 function isOutsideWorkHours(policy: any): boolean {
-  const now = new Date();
-  const hour = now.getUTCHours();
+  const { hour } = getZonedDateParts(policy);
   return hour < policy.work_hours_start || hour >= policy.work_hours_end;
 }
 
 function fallbackDecision(data: PurchaseRequest): PolicyDecision {
-  if (data.sensitivity_level === 'restricted' || data.sensitivity_level === 'confidential') {
-    return {
-      status: 'pending',
-      decision_by: 'fallback:human',
-      reason: `Policy engine unavailable — ${data.sensitivity_level} sensitivity requires human review`,
-    };
-  }
   return {
-    status: 'approved',
-    decision_by: 'fallback:auto',
-    reason: `Auto-approved (${data.sensitivity_level} sensitivity, policy engine unavailable)`,
+    status: 'pending',
+    decision_by: 'fallback:engine_unavailable',
+    reason: `Policy engine unavailable — ${data.sensitivity_level} sensitivity requires human review`,
   };
 }

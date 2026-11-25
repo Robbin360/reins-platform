@@ -2,27 +2,16 @@
 -- REINS — SCHEMA COMPLETO (v0.4 - Security Gateway multi-tenant)
 -- =====================================================
 -- Instrucciones: pegá todo este archivo en Supabase → SQL Editor
--- y ejecutalo. Va a borrar las tablas existentes y recrearlas.
--- Si tenés datos importantes, haceles backup antes.
+-- y ejecutalo. Es idempotente: no borra tablas ni datos existentes.
 -- =====================================================
 
 -- Extensiones
 create extension if not exists "uuid-ossp";
 
 -- =====================================================
--- LIMPIEZA (para idempotencia del script)
--- =====================================================
-drop table if exists budget_usage cascade;
-drop table if exists audit_log cascade;
-drop table if exists action_requests cascade;
-drop table if exists policies cascade;
-drop table if exists agents cascade;
-drop table if exists organizations cascade;
-
--- =====================================================
 -- 1. ORGANIZACIONES
 -- =====================================================
-create table organizations (
+create table if not exists organizations (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
   slug text unique not null,
@@ -36,7 +25,7 @@ create table organizations (
 -- =====================================================
 -- 2. AGENTES
 -- =====================================================
-create table agents (
+create table if not exists agents (
   id uuid primary key default uuid_generate_v4(),
   organization_id uuid references organizations(id) on delete cascade,
   agent_id text unique not null,
@@ -48,13 +37,13 @@ create table agents (
   created_at timestamptz default now()
 );
 
-create index idx_agents_agent_id on agents(agent_id);
-create index idx_agents_org on agents(organization_id);
+create index if not exists idx_agents_agent_id on agents(agent_id);
+create index if not exists idx_agents_org on agents(organization_id);
 
 -- =====================================================
 -- 3. POLÍTICAS (orientadas a seguridad)
 -- =====================================================
-create table policies (
+create table if not exists policies (
   id uuid primary key default uuid_generate_v4(),
   organization_id uuid references organizations(id) on delete cascade,
   name text not null,
@@ -87,15 +76,15 @@ create table policies (
   updated_at timestamptz default now()
 );
 
-create index idx_policies_org on policies(organization_id);
-create index idx_policies_active on policies(is_active);
-create index idx_policies_action on policies(action_type);
-create index idx_policies_sensitivity on policies(sensitivity_level);
+create index if not exists idx_policies_org on policies(organization_id);
+create index if not exists idx_policies_active on policies(is_active);
+create index if not exists idx_policies_action on policies(action_type);
+create index if not exists idx_policies_sensitivity on policies(sensitivity_level);
 
 -- =====================================================
 -- 4. SOLICITUDES DE ACCIÓN (antes purchase_requests)
 -- =====================================================
-create table action_requests (
+create table if not exists action_requests (
   id uuid primary key default uuid_generate_v4(),
   organization_id uuid references organizations(id) on delete set null,
   agent_id text not null,
@@ -127,17 +116,17 @@ create table action_requests (
   expires_at timestamptz
 );
 
-create index idx_actions_agent on action_requests(agent_id);
-create index idx_actions_status on action_requests(status);
-create index idx_actions_created on action_requests(created_at desc);
-create index idx_actions_org on action_requests(organization_id);
-create index idx_actions_type on action_requests(action_type);
-create index idx_actions_sensitivity on action_requests(sensitivity_level);
+create index if not exists idx_actions_agent on action_requests(agent_id);
+create index if not exists idx_actions_status on action_requests(status);
+create index if not exists idx_actions_created on action_requests(created_at desc);
+create index if not exists idx_actions_org on action_requests(organization_id);
+create index if not exists idx_actions_type on action_requests(action_type);
+create index if not exists idx_actions_sensitivity on action_requests(sensitivity_level);
 
 -- =====================================================
 -- 5. AUDIT LOG (append-only, protegido por trigger, multi-tenant)
 -- =====================================================
-create table audit_log (
+create table if not exists audit_log (
   id uuid primary key default uuid_generate_v4(),
   event_type text not null,
   entity_type text,
@@ -150,15 +139,15 @@ create table audit_log (
   created_at timestamptz default now()
 );
 
-create index idx_audit_event on audit_log(event_type);
-create index idx_audit_entity on audit_log(entity_type, entity_id);
-create index idx_audit_created on audit_log(created_at desc);
-create index idx_audit_org on audit_log(organization_id);
+create index if not exists idx_audit_event on audit_log(event_type);
+create index if not exists idx_audit_entity on audit_log(entity_type, entity_id);
+create index if not exists idx_audit_created on audit_log(created_at desc);
+create index if not exists idx_audit_org on audit_log(organization_id);
 
 -- =====================================================
 -- 6. PRESUPUESTOS (tracking de uso - adaptado a acciones)
 -- =====================================================
-create table budget_usage (
+create table if not exists budget_usage (
   id uuid primary key default uuid_generate_v4(),
   organization_id uuid references organizations(id) on delete cascade,
   agent_id text not null,
@@ -172,7 +161,7 @@ create table budget_usage (
   unique(agent_id, action_type, period, period_start)
 );
 
-create index idx_budget_agent on budget_usage(agent_id);
+create index if not exists idx_budget_agent on budget_usage(agent_id);
 
 -- =====================================================
 -- 7. FUNCIONES Y TRIGGERS
@@ -185,10 +174,10 @@ begin
 end;
 $$ language plpgsql;
 
-create trigger trg_policies_updated before update on policies
+create or replace trigger trg_policies_updated before update on policies
   for each row execute function update_updated_at_column();
 
-create trigger trg_organizations_updated before update on organizations
+create or replace trigger trg_organizations_updated before update on organizations
   for each row execute function update_updated_at_column();
 
 create or replace function log_audit(
@@ -214,45 +203,92 @@ values ('Default Organization', 'default')
 on conflict (slug) do nothing;
 
 -- Políticas de seguridad (organization_id NULL = defaults globales que heredan todos los tenants)
-insert into policies (name, description, action_type, sensitivity_level, requires_approval, priority) values
-  ('Block production DB writes without human approval',
-   'Cualquier write en base de datos de producción requiere aprobación humana',
-   'db_write', 'restricted', true, 1);
+-- Cada INSERT evita duplicados por nombre; los UPDATE corrigen instalaciones existentes.
+insert into policies (name, description, action_type, environment, requires_approval, priority)
+select 'Block production DB writes without human approval',
+       'Cualquier write en base de datos de producción requiere aprobación humana',
+       'db_write', 'production', true, 2
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Block production DB writes without human approval'
+);
 
-insert into policies (name, description, action_type, sensitivity_level, environment, auto_approve, priority) values
-  ('Auto-approve staging read-only actions',
-   'Lecturas en staging se auto-aprueban',
-   'db_read', 'public', 'staging', true, 10);
+insert into policies (name, description, action_type, sensitivity_level, environment, auto_approve, priority)
+select 'Auto-approve staging read-only actions',
+       'Lecturas en staging se auto-aprueban',
+       'db_read', 'public', 'staging', true, 6
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Auto-approve staging read-only actions'
+);
 
-insert into policies (name, description, action_type, sensitivity_level, requires_approval, priority) values
-  ('Payment API calls require approval',
-   'Llamadas a APIs de pago requieren aprobación',
-   'api_call', 'restricted', true, 2);
+insert into policies (name, description, action_type, sensitivity_level, requires_approval, priority)
+select 'Payment API calls require approval',
+       'Llamadas a APIs de pago requieren aprobación',
+       'api_call', 'restricted', true, 3
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Payment API calls require approval'
+);
 
-insert into policies (name, description, action_type, block_outside_hours, priority) values
-  ('Block data exports outside business hours',
-   'Exports de datos bloqueados fuera de horario laboral',
-   'data_export', true, 3);
+insert into policies (name, description, action_type, block_outside_hours, priority)
+select 'Block data exports outside business hours',
+       'Exports de datos bloqueados fuera de horario laboral',
+       'data_export', true, 4
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Block data exports outside business hours'
+);
 
-insert into policies (name, description, action_type, sensitivity_level, hard_block, priority) values
-  ('Hard block customer PII exports',
-   'Exports de PII de clientes siempre bloqueados',
-   'data_export', 'restricted', true, 1);
+insert into policies (name, description, action_type, sensitivity_level, hard_block, priority)
+select 'Hard block customer PII exports',
+       'Exports de PII de clientes siempre bloqueados',
+       'data_export', 'restricted', true, 1
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Hard block customer PII exports'
+);
 
-insert into policies (name, description, action_type, environment, requires_approval, priority) values
-  ('Infrastructure provisioning requires approval',
-   'Provisionar infraestructura en producción requiere aprobación',
-   'infra_provision', 'production', true, 2);
+insert into policies (name, description, action_type, environment, requires_approval, priority)
+select 'Infrastructure provisioning requires approval',
+       'Provisionar infraestructura en producción requiere aprobación',
+       'infra_provision', 'production', true, 5
+where not exists (
+  select 1 from policies
+  where organization_id is null and name = 'Infrastructure provisioning requires approval'
+);
+
+update policies
+set action_type = 'db_write',
+    target_resource = null,
+    sensitivity_level = null,
+    environment = 'production',
+    requires_approval = true,
+    auto_approve = false,
+    hard_block = false,
+    priority = 2,
+    is_active = true
+where organization_id is null
+  and name = 'Block production DB writes without human approval';
+
+update policies set priority = 6
+where organization_id is null and name = 'Auto-approve staging read-only actions';
+update policies set priority = 3
+where organization_id is null and name = 'Payment API calls require approval';
+update policies set priority = 4
+where organization_id is null and name = 'Block data exports outside business hours';
+update policies set priority = 1
+where organization_id is null and name = 'Hard block customer PII exports';
+update policies set priority = 5
+where organization_id is null and name = 'Infrastructure provisioning requires approval';
 
 -- =====================================================
--- 9. ROW LEVEL SECURITY (preparado para multi-tenant)
+-- 9. AISLAMIENTO MULTI-TENANT
 -- =====================================================
-alter table organizations enable row level security;
-alter table agents enable row level security;
-alter table policies enable row level security;
-alter table action_requests enable row level security;
-alter table audit_log enable row level security;
-alter table budget_usage enable row level security;
+-- El aislamiento se aplica en la capa de aplicación: cada query se scopea
+-- por organization_id según la API key autenticada. La API usa la service key
+-- de Supabase, que bypassa RLS; por eso no se presenta RLS como mecanismo de
+-- aislamiento ni se habilita aquí.
 
 -- =====================================================
 -- 10. AUDIT LOG APPEND-ONLY (protección a nivel de base)
@@ -266,12 +302,10 @@ begin
 end;
 $$ language plpgsql;
 
-drop trigger if exists audit_log_no_mutation on audit_log;
-create trigger audit_log_no_mutation
+create or replace trigger audit_log_no_mutation
 before update or delete on audit_log
 for each row execute function prevent_audit_mutation();
 
-drop trigger if exists audit_log_no_truncate on audit_log;
-create trigger audit_log_no_truncate
+create or replace trigger audit_log_no_truncate
 before truncate on audit_log
 for each statement execute function prevent_audit_mutation();

@@ -30,7 +30,7 @@ AI Agent → MCP Server (reins-mcp) → Reins API (this repo) → Your systems
 2. Open the SQL Editor and run the entire `schema.sql` from this repo
 3. Grab your project URL and service key (Settings → API)
 
-> ⚠️ `schema.sql` drops and recreates tables. Only run it on a fresh project, or back up first.
+> `schema.sql` is idempotent: it does not drop tables or delete existing data, and it can be run again safely.
 
 ### 2. Telegram bot (for human approvals)
 
@@ -96,6 +96,7 @@ In your MCP config (Claude Desktop, Cursor, Windsurf), use your own URL and admi
 ## Security model
 
 - **Contextual policies** — same action, different context, different decision (blast radius, sensitivity, environment, time-of-day)
+- **Tenant isolation** — enforced in the application layer by scoping every query to the authenticated organization. The API uses the Supabase service key, which bypasses RLS; RLS is not used as the isolation boundary.
 - **Human-in-the-loop** — high-risk actions pause and route to Telegram with approve/reject buttons
 - **Append-only audit log** — Postgres triggers reject UPDATE/DELETE/TRUNCATE on `audit_log`; even the application can't erase it. Only the DB owner can disable the triggers.
 - **Webhook authentication** — Telegram callbacks are validated against a shared secret (fail-closed)

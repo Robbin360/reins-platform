@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { logAudit } from '../services/audit.js';
 import { keysEqual } from '../lib/keys.js';
+import { expireActionIfNeeded } from '../services/action-expiry.js';
 
 const router = Router();
 
@@ -47,6 +48,19 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
+  const { data: found, error: findError } = await supabase
+    .from('action_requests')
+    .select('id, status, expires_at')
+    .eq('id', requestId)
+    .eq('organization_id', org.id)
+    .single();
+
+  if (findError || !found) return;
+
+  const existing = await expireActionIfNeeded(found);
+  // Ya decidida o vencida: no auditar ni mutar la decisión.
+  if (existing.status !== 'pending') return;
+
   const { data: row, error } = await supabase
     .from('action_requests')
     .update({
@@ -61,7 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
     .select()
     .single();
 
-  // 0 filas: acción inexistente, de otro org, o ya decidida. No auditar ni mutar.
+  // 0 filas: otra decisión ganó la carrera. No auditar ni mutar.
   if (error || !row) return;
 
   // Editamos el mensaje original para reflejar la decisión

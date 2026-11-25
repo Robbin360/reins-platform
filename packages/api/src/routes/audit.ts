@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../lib/supabase.js';
+import { logAudit } from '../services/audit.js';
 
 const router = Router();
 
 router.get('/', async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const orgId = (req as any).orgId ?? null;
+  const actor = (req as any).isAdmin ? 'admin:rest' : 'tenant:rest';
   let query = supabase
     .from('audit_log')
     .select('*')
@@ -20,6 +22,12 @@ router.get('/', async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
     return;
   }
+
+  await logAudit('audit.read', 'audit_log', null, actor, null, {
+    limit,
+    rows: data?.length ?? 0,
+  }, orgId);
+
   res.json(data);
 });
 
